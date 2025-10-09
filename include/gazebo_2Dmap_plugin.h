@@ -24,17 +24,17 @@
 
 #include <iostream>
 #include <math.h>
+#include <memory>
 
 #include <common.h>
 #include <gazebo/common/common.hh>
 #include <gazebo/gazebo.hh>
 #include <gazebo/physics/physics.hh>
 #include <octomap/octomap.h>
-#include <ros/ros.h>
+#include <rclcpp/rclcpp.hpp>
 #include <sdf/sdf.hh>
-#include <std_srvs/Empty.h>
-#include <costmap_2d/costmap_2d_ros.h>
-#include <std_srvs/Empty.h>
+#include <std_srvs/srv/empty.hpp>
+#include <nav_msgs/msg/occupancy_grid.hpp>
 
 namespace gazebo {
 
@@ -47,14 +47,14 @@ namespace gazebo {
 #endif
 
 /// \brief    Octomap plugin for Gazebo.
-/// \details  This plugin is dependent on ROS, and is not built if NO_ROS=TRUE is provided to
-///           CMakeLists.txt. The PX4/Firmware build does not build this file.
+/// \details  This plugin is dependent on ROS 2, and generates 2D occupancy maps
+///           from Gazebo Classic (Gazebo 11) worlds.
 class OccupancyMapFromWorld : public WorldPlugin {
  public:
   OccupancyMapFromWorld()
       : WorldPlugin(), name_("gazebo_2Dmap_plugin")
   {
-    ROS_INFO_NAMED(name_, "occupancy map plugin started");
+    RCLCPP_INFO(rclcpp::get_logger(name_), "occupancy map plugin started");
   }
   virtual ~OccupancyMapFromWorld();
 
@@ -80,13 +80,23 @@ class OccupancyMapFromWorld : public WorldPlugin {
   */
   void CreateOccupancyMap();
 
-  static void cell2world(unsigned int cell_x, unsigned int cell_y,
-                         double map_size_x, double map_size_y, double map_resolution,
-                         double& world_x, double &world_y);
+  /// \brief Compute world bounding box from all models
+  /// \param[out] min_x Minimum x coordinate
+  /// \param[out] max_x Maximum x coordinate
+  /// \param[out] min_y Minimum y coordinate
+  /// \param[out] max_y Maximum y coordinate
+  /// \return true if bounding box was computed successfully
+  bool ComputeWorldBounds(double& min_x, double& max_x, double& min_y, double& max_y);
 
-  static void world2cell(double world_x, double world_y,
-                         double map_size_x, double map_size_y, double map_resolution,
-                         unsigned int& cell_x, unsigned int& cell_y);
+  void cell2world(unsigned int cell_x, unsigned int cell_y,
+                  double map_size_x, double map_size_y, double map_resolution,
+                  double map_origin_x, double map_origin_y,
+                  double& world_x, double &world_y);
+
+  void world2cell(double world_x, double world_y,
+                  double map_size_x, double map_size_y, double map_resolution,
+                  double map_origin_x, double map_origin_y,
+                  unsigned int& cell_x, unsigned int& cell_y);
 
   static bool cell2index(int cell_x, int cell_y,
                          unsigned int cell_size_x, unsigned int cell_size_y,
@@ -96,14 +106,15 @@ class OccupancyMapFromWorld : public WorldPlugin {
                          unsigned int& cell_x, unsigned int& cell_y);
 
  private:
-  bool ServiceCallback(std_srvs::Empty::Request& req,
-                       std_srvs::Empty::Response& res);
+  void ServiceCallback(
+    const std::shared_ptr<std_srvs::srv::Empty::Request> req,
+    std::shared_ptr<std_srvs::srv::Empty::Response> res);
 
   physics::WorldPtr world_;
-  ros::NodeHandle nh_;
-  ros::ServiceServer map_service_;
-  ros::Publisher map_pub_;
-  nav_msgs::OccupancyGrid* occupancy_map_;
+  rclcpp::Node::SharedPtr ros_node_;
+  rclcpp::Service<std_srvs::srv::Empty>::SharedPtr map_service_;
+  rclcpp::Publisher<nav_msgs::msg::OccupancyGrid>::SharedPtr map_pub_;
+  nav_msgs::msg::OccupancyGrid* occupancy_map_;
   std::string name_;
   double map_resolution_;
   double map_height_;
@@ -111,6 +122,9 @@ class OccupancyMapFromWorld : public WorldPlugin {
   double map_size_y_;
   double init_robot_x_;
   double init_robot_y_;
+  double map_margin_;  // Margin to add around auto-detected bounds
+  double map_origin_x_;  // Map center X (0.0 for manual, computed for auto)
+  double map_origin_y_;  // Map center Y (0.0 for manual, computed for auto)
 };
 
 } // namespace gazebo

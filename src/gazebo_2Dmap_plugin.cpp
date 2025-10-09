@@ -20,8 +20,12 @@
 
 #include "gazebo_2Dmap_plugin.h"
 
+#include <algorithm>
+#include <cmath>
+#include <limits>
 #include <gazebo/common/Time.hh>
 #include <gazebo/common/CommonTypes.hh>
+#include <gazebo_ros/node.hpp>
 
 
 namespace gazebo {
@@ -36,16 +40,23 @@ void OccupancyMapFromWorld::Load(physics::WorldPtr _parent,
 
   world_ = _parent;
 
-  map_pub_ = nh_.advertise<nav_msgs::OccupancyGrid>("map2d", 1, true);
-  map_service_ = nh_.advertiseService(
-        "gazebo_2Dmap_plugin/generate_map", &OccupancyMapFromWorld::ServiceCallback, this);
+  // Initialize ROS 2 node
+  ros_node_ = gazebo_ros::Node::Get(_sdf);
 
-  map_resolution_ = 0.1;
+  map_pub_ = ros_node_->create_publisher<nav_msgs::msg::OccupancyGrid>("map2d", 
+    rclcpp::QoS(1).transient_local());
+  
+  map_service_ = ros_node_->create_service<std_srvs::srv::Empty>(
+    "gazebo_2Dmap_plugin/generate_map",
+    std::bind(&OccupancyMapFromWorld::ServiceCallback, this, 
+              std::placeholders::_1, std::placeholders::_2));
+
+  map_resolution_ = 0.05;  // Default resolution
 
   if(_sdf->HasElement("map_resolution"))
     map_resolution_ = _sdf->GetElement("map_resolution")->Get<double>();
 
-  map_height_ = 0.3;
+  map_height_ = 0.2;  // Default height of the 2D map slice
 
   if(_sdf->HasElement("map_z"))
     map_height_ = _sdf->GetElement("map_z")->Get<double>();
@@ -60,126 +71,180 @@ void OccupancyMapFromWorld::Load(physics::WorldPtr _parent,
   if(_sdf->HasElement("init_robot_y"))
     init_robot_y_ = _sdf->GetElement("init_robot_y")->Get<double>();
 
-  map_size_x_ = 10.0;
+  map_margin_ = 2.0;  // Default margin around auto-detected bounds
 
-  if(_sdf->HasElement("map_size_x"))
+  if(_sdf->HasElement("map_margin"))
+    map_margin_ = _sdf->GetElement("map_margin")->Get<double>();
+
+  // Check if map sizes are manually specified
+  bool map_size_x_specified = _sdf->HasElement("map_size_x");
+  bool map_size_y_specified = _sdf->HasElement("map_size_y");
+
+  map_size_x_ = 10.0;  // Default fallback
+  map_size_y_ = 10.0;  // Default fallback
+  map_origin_x_ = 0.0;  // Default: centered at world origin
+  map_origin_y_ = 0.0;
+
+  if(map_size_x_specified)
     map_size_x_ = _sdf->GetElement("map_size_x")->Get<double>();
 
-  map_size_y_ = 10.0;
-
-  if(_sdf->HasElement("map_size_y"))
+  if(map_size_y_specified)
     map_size_y_ = _sdf->GetElement("map_size_y")->Get<double>();
 
-  sdf::ElementPtr contactSensorSDF = _sdf->GetElement("contactSensor");
+  // If map sizes are not specified, try to compute them automatically
+  if(!map_size_x_specified || !map_size_y_specified)
+  {
+    double min_x, max_x, min_y, max_y;
+    if(ComputeWorldBounds(min_x, max_x, min_y, max_y))
+    {
+      if(!map_size_x_specified)
+      {
+        // Map is centered at world origin (0,0), so compute size to fit all bounds
+        // Take the maximum absolute extent in X direction and double it (plus margin)
+        double max_extent_x = std::max(std::abs(min_x), std::abs(max_x));
+        map_size_x_ = 2.0 * max_extent_x + 2.0 * map_margin_;
+        map_origin_x_ = 0.0;  // Always centered at world origin
+        RCLCPP_INFO(ros_node_->get_logger(), 
+          "Auto-detected map_size_x: %.2f (world bounds: %.2f to %.2f, centered at origin: 0.0, margin: %.2f)", 
+          map_size_x_, min_x, max_x, map_margin_);
+      }
+      
+      if(!map_size_y_specified)
+      {
+        // Map is centered at world origin (0,0), so compute size to fit all bounds
+        // Take the maximum absolute extent in Y direction and double it (plus margin)
+        double max_extent_y = std::max(std::abs(min_y), std::abs(max_y));
+        map_size_y_ = 2.0 * max_extent_y + 2.0 * map_margin_;
+        map_origin_y_ = 0.0;  // Always centered at world origin
+        RCLCPP_INFO(ros_node_->get_logger(), 
+          "Auto-detected map_size_y: %.2f (world bounds: %.2f to %.2f, centered at origin: 0.0, margin: %.2f)", 
+          map_size_y_, min_y, max_y, map_margin_);
+      }
+    }
+    else
+    {
+      RCLCPP_WARN(ros_node_->get_logger(), 
+        "Failed to auto-detect world bounds. Using default values: map_size_x=%.1f, map_size_y=%.1f",
+        map_size_x_, map_size_y_);
+    }
+  }
 
-  //  std::string service_name = "world/get_octomap";
-  //  std::string octomap_pub_topic = "world/octomap";
-  //  getSdfParam<std::string>(_sdf, "octomapPubTopic", octomap_pub_topic,
-  //                           octomap_pub_topic);
-  //  getSdfParam<std::string>(_sdf, "octomapServiceName", service_name,
-  //                           service_name);
-
-  //  gzlog << "Advertising service: " << service_name << std::endl;
-  //  srv_ = node_handle_.advertiseService(
-  //      service_name, &OctomapFromGazeboWorld::ServiceCallback, this);
-  //  octomap_publisher_ =
-  //      node_handle_.advertise<octomap_msgs::Octomap>(octomap_pub_topic, 1, true);
+  RCLCPP_INFO(ros_node_->get_logger(), 
+    "Map configuration - Resolution: %.2f, Height: %.2f, Size: %.1fx%.1f, Centered at world origin: (%.2f, %.2f), Init pos: (%.1f, %.1f)",
+    map_resolution_, map_height_, map_size_x_, map_size_y_, map_origin_x_, map_origin_y_, init_robot_x_, init_robot_y_);
 }
 
-//bool OctomapFromGazeboWorld::ServiceCallback(
-//    robotino_sim::Octomap::Request& req, robotino_sim::Octomap::Response& res) {
-//  std::cout << "Creating octomap with origin at (" << req.bounding_box_origin.x
-//        << ", " << req.bounding_box_origin.y << ", "
-//        << req.bounding_box_origin.z << "), and bounding box lengths ("
-//        << req.bounding_box_lengths.x << ", " << req.bounding_box_lengths.y
-//        << ", " << req.bounding_box_lengths.z
-//        << "), and leaf size: " << req.leaf_size << ".\n";
-//  CreateOctomap(req);
-//  if (req.filename != "") {
-//    if (octomap_) {
-//      std::string path = req.filename;
-//      octomap_->writeBinary(path);
-//      std::cout << std::endl << "Octree saved as " << path << std::endl;
-//    } else {
-//      ROS_ERROR("The octree is NULL. Will not save that.");
-//    }
-//  }
-//  common::Time now = world_->GetSimTime();
-//  res.map.header.frame_id = "world";
-//  res.map.header.stamp = ros::Time(now.sec, now.nsec);
-
-//  if (!octomap_msgs::binaryMapToMsg(*octomap_, res.map)) {
-//    ROS_ERROR("Error serializing OctoMap");
-//  }
-
-//  if (req.publish_octomap) {
-//    gzlog << "Publishing Octomap." << std::endl;
-//    octomap_publisher_.publish(res.map);
-//  }
-
-//  common::SphericalCoordinatesPtr sphericalCoordinates = world_->GetSphericalCoordinates();
-//#if GAZEBO_MAJOR_VERSION >= 6
-//  ignition::math::Vector3d origin_cartesian(0.0, 0.0, 0.0);
-//  ignition::math::Vector3d origin_spherical = sphericalCoordinates->
-//      SphericalFromLocal(origin_cartesian);
-
-//  res.origin_latitude = origin_spherical.X();
-//  res.origin_longitude = origin_spherical.Y();
-//  res.origin_altitude = origin_spherical.Z();
-//  return true;
-//#else
-//  math::Vector3 origin_cartesian(0.0, 0.0, 0.0);
-//  math::Vector3 origin_spherical = sphericalCoordinates->
-//         SphericalFromLocal(origin_cartesian);
-
-//  res.origin_latitude = origin_spherical.x;
-//  res.origin_longitude = origin_spherical.y;
-//  res.origin_altitude = origin_spherical.z;
-//  return true;
-//#endif
-//}
-
-//void OctomapFromGazeboWorld::FloodFill(
-//    const math::Vector3& seed_point, const math::Vector3& bounding_box_origin,
-//    const math::Vector3& bounding_box_lengths, const double leaf_size) {
-//  octomap::OcTreeNode* seed =
-//      octomap_->search(seed_point.x, seed_point.y, seed_point.z);
-//  // do nothing if point occupied
-//  if (seed != NULL && seed->getOccupancy()) return;
-
-//  std::stack<octomath::Vector3> to_check;
-//  to_check.push(octomath::Vector3(seed_point.x, seed_point.y, seed_point.z));
-
-//  while (to_check.size() > 0) {
-//    octomath::Vector3 p = to_check.top();
-
-//    if ((p.x() > bounding_box_origin.x - bounding_box_lengths.x / 2) &&
-//        (p.x() < bounding_box_origin.x + bounding_box_lengths.x / 2) &&
-//        (p.y() > bounding_box_origin.y - bounding_box_lengths.y / 2) &&
-//        (p.y() < bounding_box_origin.y + bounding_box_lengths.y / 2) &&
-//        (p.z() > bounding_box_origin.z - bounding_box_lengths.z / 2) &&
-//        (p.z() < bounding_box_origin.z + bounding_box_lengths.z / 2) &&
-//        (!octomap_->search(p))) {
-//      octomap_->setNodeValue(p, 0);
-//      to_check.pop();
-//      to_check.push(octomath::Vector3(p.x() + leaf_size, p.y(), p.z()));
-//      to_check.push(octomath::Vector3(p.x() - leaf_size, p.y(), p.z()));
-//      to_check.push(octomath::Vector3(p.x(), p.y() + leaf_size, p.z()));
-//      to_check.push(octomath::Vector3(p.x(), p.y() - leaf_size, p.z()));
-//      to_check.push(octomath::Vector3(p.x(), p.y(), p.z() + leaf_size));
-//      to_check.push(octomath::Vector3(p.x(), p.y(), p.z() - leaf_size));
-
-//    } else {
-//      to_check.pop();
-//    }
-//  }
-//}
-
-bool OccupancyMapFromWorld::ServiceCallback(std_srvs::Empty::Request& req,
-                                            std_srvs::Empty::Response& res)
+bool OccupancyMapFromWorld::ComputeWorldBounds(double& min_x, double& max_x, 
+                                                double& min_y, double& max_y)
 {
+  if(!world_)
+  {
+    RCLCPP_ERROR(ros_node_->get_logger(), "World pointer is null");
+    return false;
+  }
+
+  // Get all models in the world
+#if GAZEBO_MAJOR_VERSION >= 8
+  auto models = world_->Models();
+#else
+  auto models = world_->GetModels();
+#endif
+
+  if(models.empty())
+  {
+    RCLCPP_WARN(ros_node_->get_logger(), "No models found in world");
+    return false;
+  }
+
+  bool bounds_initialized = false;
+  min_x = min_y = 0.0;
+  max_x = max_y = 0.0;
+
+  int model_count = 0;
+  
+  // Iterate through all models and compute bounding box
+  for(const auto& model : models)
+  {
+    if(!model) continue;
+    
+#if GAZEBO_MAJOR_VERSION >= 8
+    ignition::math::AxisAlignedBox bbox = model->BoundingBox();
+    
+    // Skip invalid bounding boxes
+    if(!bbox.Min().IsFinite() || !bbox.Max().IsFinite())
+    {
+      RCLCPP_DEBUG(ros_node_->get_logger(), "Skipping model '%s' with invalid bounding box", 
+                   model->GetName().c_str());
+      continue;
+    }
+    
+    ignition::math::Vector3d bbox_min = bbox.Min();
+    ignition::math::Vector3d bbox_max = bbox.Max();
+    
+    double model_min_x = bbox_min.X();
+    double model_max_x = bbox_max.X();
+    double model_min_y = bbox_min.Y();
+    double model_max_y = bbox_max.Y();
+#else
+    gazebo::math::Box bbox = model->GetBoundingBox();
+    gazebo::math::Vector3 bbox_min = bbox.min;
+    gazebo::math::Vector3 bbox_max = bbox.max;
+    
+    // Skip invalid bounding boxes
+    if(!std::isfinite(bbox_min.x) || !std::isfinite(bbox_max.x))
+    {
+      RCLCPP_DEBUG(ros_node_->get_logger(), "Skipping model '%s' with invalid bounding box", 
+                   model->GetName().c_str());
+      continue;
+    }
+    
+    double model_min_x = bbox_min.x;
+    double model_max_x = bbox_max.x;
+    double model_min_y = bbox_min.y;
+    double model_max_y = bbox_max.y;
+#endif
+
+    if(!bounds_initialized)
+    {
+      min_x = model_min_x;
+      max_x = model_max_x;
+      min_y = model_min_y;
+      max_y = model_max_y;
+      bounds_initialized = true;
+    }
+    else
+    {
+      min_x = std::min(min_x, model_min_x);
+      max_x = std::max(max_x, model_max_x);
+      min_y = std::min(min_y, model_min_y);
+      max_y = std::max(max_y, model_max_y);
+    }
+    
+    model_count++;
+    RCLCPP_DEBUG(ros_node_->get_logger(), "Model '%s': X[%.2f, %.2f], Y[%.2f, %.2f]",
+                 model->GetName().c_str(), model_min_x, model_max_x, model_min_y, model_max_y);
+  }
+
+  if(model_count > 0 && bounds_initialized)
+  {
+    RCLCPP_DEBUG(ros_node_->get_logger(), 
+      "Computed world bounds from %d models: X[%.2f, %.2f], Y[%.2f, %.2f]",
+      model_count, min_x, max_x, min_y, max_y);
+    return true;
+  }
+
+  RCLCPP_WARN(ros_node_->get_logger(), 
+    "No valid bounding boxes found from %d models", static_cast<int>(models.size()));
+  return false;
+}
+
+void OccupancyMapFromWorld::ServiceCallback(
+  const std::shared_ptr<std_srvs::srv::Empty::Request> req,
+  std::shared_ptr<std_srvs::srv::Empty::Response> res)
+{
+  (void)req;
+  (void)res;
   CreateOccupancyMap();
-  return true;
 }
 
 
@@ -244,28 +309,34 @@ bool OccupancyMapFromWorld::worldCellIntersection(const vector3d& cell_center,
 void OccupancyMapFromWorld::cell2world(unsigned int cell_x, unsigned int cell_y,
                                        double map_size_x, double map_size_y,
                                        double map_resolution,
+                                       double map_origin_x, double map_origin_y,
                                        double& world_x, double &world_y)
 {
-  world_x = cell_x * map_resolution - map_size_x/2 + map_resolution/2;
-  world_y = cell_y * map_resolution - map_size_y/2 + map_resolution/2;
+  // Convert cell coordinates to world coordinates
+  // Cell (0,0) corresponds to the bottom-left corner of the map
+  world_x = map_origin_x - map_size_x/2 + cell_x * map_resolution + map_resolution/2;
+  world_y = map_origin_y - map_size_y/2 + cell_y * map_resolution + map_resolution/2;
 }
 
 void OccupancyMapFromWorld::world2cell(double world_x, double world_y,
                                        double map_size_x, double map_size_y,
                                        double map_resolution,
+                                       double map_origin_x, double map_origin_y,
                                        unsigned int& cell_x, unsigned int& cell_y)
 {
-  cell_x = (world_x + map_size_x/2) / map_resolution;
-  cell_y = (world_y + map_size_y/2) / map_resolution;
+  // Convert world coordinates to cell coordinates
+  cell_x = (world_x - map_origin_x + map_size_x/2) / map_resolution;
+  cell_y = (world_y - map_origin_y + map_size_y/2) / map_resolution;
 }
 
 bool OccupancyMapFromWorld::cell2index(int cell_x, int cell_y,
                                        unsigned int cell_size_x, unsigned int cell_size_y,
                                        unsigned int& map_index)
 {
-  if(cell_x >= 0 && cell_x < cell_size_x && cell_y >= 0 && cell_y < cell_size_y)
+  if(cell_x >= 0 && static_cast<unsigned int>(cell_x) < cell_size_x && 
+     cell_y >= 0 && static_cast<unsigned int>(cell_y) < cell_size_y)
   {
-    map_index = cell_y * cell_size_y + cell_x;
+    map_index = cell_y * cell_size_x + cell_x;
     return true;
   }
   else
@@ -279,10 +350,10 @@ bool OccupancyMapFromWorld::index2cell(int index, unsigned int cell_size_x,
                                        unsigned int cell_size_y,
                                        unsigned int& cell_x, unsigned int& cell_y)
 {
-  cell_y = index / cell_size_y;
+  cell_y = index / cell_size_x;
   cell_x = index % cell_size_x;
 
-  if(cell_x >= 0 && cell_x < cell_size_x && cell_y >= 0 && cell_y < cell_size_y)
+  if(cell_x < cell_size_x && cell_y < cell_size_y)
     return true;
   else
   {
@@ -293,19 +364,19 @@ bool OccupancyMapFromWorld::index2cell(int index, unsigned int cell_size_x,
 
 void OccupancyMapFromWorld::CreateOccupancyMap()
 {
-  //TODO map origin different from (0,0)
-  vector3d map_origin(0,0,map_height_);
+  // Use computed map origin (0,0 for manual specification, actual world center for auto-detection)
+  vector3d map_origin(map_origin_x_, map_origin_y_, map_height_);
 
   unsigned int cells_size_x = map_size_x_ / map_resolution_;
   unsigned int cells_size_y = map_size_y_ / map_resolution_;
 
-  occupancy_map_ = new nav_msgs::OccupancyGrid();
+  occupancy_map_ = new nav_msgs::msg::OccupancyGrid();
   occupancy_map_->data.resize(cells_size_x * cells_size_y);
   //all cells are initially unknown
   std::fill(occupancy_map_->data.begin(), occupancy_map_->data.end(), -1);
-  occupancy_map_->header.stamp = ros::Time::now();
+  occupancy_map_->header.stamp = ros_node_->now();
   occupancy_map_->header.frame_id = "odom"; //TODO map frame
-  occupancy_map_->info.map_load_time = ros::Time(0);
+  occupancy_map_->info.map_load_time = rclcpp::Time(0);
   occupancy_map_->info.resolution = map_resolution_;
   occupancy_map_->info.width = cells_size_x;
   occupancy_map_->info.height = cells_size_y;
@@ -335,12 +406,13 @@ void OccupancyMapFromWorld::CreateOccupancyMap()
   //find initial robot cell
   unsigned int cell_x, cell_y, map_index;
   world2cell(robot_x, robot_y, map_size_x_, map_size_y_, map_resolution_,
-             cell_x, cell_y);
+             map_origin_x_, map_origin_y_, cell_x, cell_y);
 
   if(!cell2index(cell_x, cell_y, cells_size_x, cells_size_y, map_index))
   {
-    ROS_ERROR_NAMED(name_, "initial robot pos is outside map, could not create "
-                           "map");
+    RCLCPP_ERROR(ros_node_->get_logger(), 
+      "initial robot pos (%.2f, %.2f) is outside map bounds (origin: %.2f, %.2f, size: %.2fx%.2f), could not create map",
+      robot_x, robot_y, map_origin_x_, map_origin_y_, map_size_x_, map_size_y_);
     return;
   }
 
@@ -377,7 +449,7 @@ void OccupancyMapFromWorld::CreateOccupancyMap()
           if(child_val != 100 && child_val != 0 && child_val != 50)
           {
             cell2world(cell_x + i, cell_y + j, map_size_x_, map_size_y_, map_resolution_,
-                       world_x, world_y);
+                       map_origin_x_, map_origin_y_, world_x, world_y);
 
             bool cell_occupied = worldCellIntersection(vector3d(world_x, world_y, map_height_),
                                                        map_resolution_, ray);
@@ -401,7 +473,14 @@ void OccupancyMapFromWorld::CreateOccupancyMap()
     }
   }
 
-  map_pub_.publish(*occupancy_map_);
+  map_pub_->publish(*occupancy_map_);
+  
+  RCLCPP_INFO(ros_node_->get_logger(), 
+    "Map published on /map2d topic - Size: %dx%d, Occupied cells: %ld, Free cells: %ld",
+    occupancy_map_->info.width, occupancy_map_->info.height,
+    std::count(occupancy_map_->data.begin(), occupancy_map_->data.end(), 100),
+    std::count(occupancy_map_->data.begin(), occupancy_map_->data.end(), 0));
+  
   std::cout << "\rOccupancy Map generation completed                  " << std::endl;
 }
 

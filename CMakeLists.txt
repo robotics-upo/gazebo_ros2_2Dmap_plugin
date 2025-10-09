@@ -1,34 +1,78 @@
-cmake_minimum_required(VERSION 2.8.3)
-project(gazebo_ros_2Dmap_plugin)
+cmake_minimum_required(VERSION 3.8)
+project(gazebo_ros2_2dmap_plugin)
 
-find_package(catkin REQUIRED COMPONENTS
-  gazebo_msgs
-  gazebo_ros
-  gazebo_ros_control
-  gazebo_plugins
-  joint_state_publisher
-  kdl_parser
-  robot_state_publisher
-  roscpp
-  rospy
-  tf
-  xacro
-)
+# Default to C++17
+if(NOT CMAKE_CXX_STANDARD)
+  set(CMAKE_CXX_STANDARD 17)
+endif()
 
-add_definitions(-std=c++11)
+if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+  add_compile_options(-Wall -Wextra -Wpedantic)
+endif()
 
+# Find dependencies
+find_package(ament_cmake REQUIRED)
+find_package(rclcpp REQUIRED)
+find_package(gazebo_dev REQUIRED)
+find_package(gazebo_ros REQUIRED)
+find_package(nav_msgs REQUIRED)
+find_package(std_srvs REQUIRED)
+find_package(geometry_msgs REQUIRED)
+
+# Find Gazebo
 find_package(gazebo REQUIRED)
-link_directories(${GAZEBO_LIBRARY_DIRS})
-
-catkin_package()
 
 include_directories(
-  include ${catkin_INCLUDE_DIRS} ${GAZEBO_MSG_INCLUDE_DIRS} ${GAZEBO_INCLUDE_DIRS}
+  include
+  ${GAZEBO_INCLUDE_DIRS}
 )
 
-add_library(gazebo_2Dmap_plugin SHARED src/gazebo_2Dmap_plugin.cpp)
-target_link_libraries(gazebo_2Dmap_plugin ${catkin_LIBRARIES} ${GAZEBO_LIBRARIES})
+link_directories(${GAZEBO_LIBRARY_DIRS})
 
+# Build the plugin
+add_library(gazebo_2Dmap_plugin SHARED 
+  src/gazebo_2Dmap_plugin.cpp
+)
+
+ament_target_dependencies(gazebo_2Dmap_plugin
+  rclcpp
+  gazebo_dev
+  gazebo_ros
+  nav_msgs
+  std_srvs
+  geometry_msgs
+)
+
+target_link_libraries(gazebo_2Dmap_plugin
+  ${GAZEBO_LIBRARIES}
+)
+
+# Install
 install(TARGETS gazebo_2Dmap_plugin
-LIBRARY DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
+  ARCHIVE DESTINATION lib
+  LIBRARY DESTINATION lib
+  RUNTIME DESTINATION bin
 )
+
+install(DIRECTORY include/
+  DESTINATION include
+)
+
+install(DIRECTORY launch/
+  DESTINATION share/${PROJECT_NAME}/launch
+)
+
+install(DIRECTORY worlds/
+  DESTINATION share/${PROJECT_NAME}/worlds
+)
+
+install(PROGRAMS scripts/generate_map.sh
+  DESTINATION lib/${PROJECT_NAME}
+)
+
+if(BUILD_TESTING)
+  find_package(ament_lint_auto REQUIRED)
+  ament_lint_auto_find_test_dependencies()
+endif()
+
+ament_package()
