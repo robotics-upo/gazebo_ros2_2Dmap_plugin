@@ -4,6 +4,8 @@
 
 This plugin generates occupancy maps by slicing the Gazebo world at a specified height and performing wavefront exploration from an initial position. Perfect for creating navigation maps without running actual SLAM.
 
+> Forked from [marinaKollmitz/gazebo_ros_2Dmap_plugin](https://github.com/marinaKollmitz/gazebo_ros_2Dmap_plugin) (originally based on ETH Zürich's [octomap plugin](https://github.com/ethz-asl/rotors_simulator/tree/master/rotors_gazebo_plugins)), this version adds ROS 2 Humble and Gazebo 11 Classic support, automatic map sizing and automated generation scripts.
+
 ## Features
 
 ✅ **Automatic map generation** from any Gazebo world  
