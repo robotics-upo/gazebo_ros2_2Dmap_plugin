@@ -2,18 +2,38 @@
 
 **Automatically generate 2D occupancy maps from Gazebo Classic worlds for ROS 2 Humble.**
 
-This plugin generates occupancy maps by slicing the Gazebo world at a specified height and performing wavefront exploration from an initial position. Perfect for creating navigation maps without running actual SLAM.
+This Gazebo plugin creates occupancy grid maps for robot navigation without running SLAM (Simultaneous Localization and Mapping). It works by slicing the Gazebo world at a configurable height and identifying obstacles through ray casting.
 
-> Forked from [marinaKollmitz/gazebo_ros_2Dmap_plugin](https://github.com/marinaKollmitz/gazebo_ros_2Dmap_plugin) (originally based on ETH Zürich's [octomap plugin](https://github.com/ethz-asl/rotors_simulator/tree/master/rotors_gazebo_plugins)), this version adds ROS 2 Humble and Gazebo 11 Classic support, automatic map sizing and automated generation scripts.
+## Table of Contents
+
+- [Features](#features)
+- [Quick Start](#quick-start)
+  - [Installation](#installation)
+  - [Automated Generation (Recommended)](#automated-generation-recommended)
+  - [Manual Method](#manual-method)
+- [Configuration](#configuration)
+- [Python Integration](#python-integration)
+- [Visualization](#visualization)
+- [Troubleshooting](#troubleshooting)
+- [ROS 2 API](#ros-2-api)
+- [Requirements](#requirements)
+- [Important Notes](#important-notes)
+- [Credits and License](#credits-and-license)
 
 ## Features
 
-✅ **Automatic map generation** from any Gazebo world  
-✅ **Auto-detection** of world bounds (no manual sizing needed)  
-✅ **Origin-aligned** maps (centered at world origin 0,0)  
-✅ **Fully automated** script (plugin injection, generation, cleanup)  
-✅ **Subprocess-ready** for Python integration  
-✅ **ROS 2 Humble** compatible with Gazebo 11 Classic
+- **Automatic map generation** from any Gazebo world
+- **Auto-detection** of world bounds (no manual sizing needed)
+- **Origin-aligned** maps (centered at world origin 0,0)
+- **Fully automated** script (plugin injection, generation, cleanup)
+- **Subprocess-ready** for Python integration
+- **ROS 2 Humble** compatible with Gazebo 11 Classic
+
+## Requirements
+
+- ROS 2 Humble
+- Gazebo 11 (Classic)
+- `nav2_map_server` (for saving maps): `sudo apt install ros-humble-nav2-map-server`
 
 ## Quick Start
 
@@ -41,10 +61,10 @@ ros2 run gazebo_ros2_2dmap_plugin generate_map.sh ~/my_world.sdf ~/maps
 
 **Output:** Creates `my_world.yaml` and `my_world.pgm` (automatically named from world file)
 
-**What it does:**
+The script performs these steps automatically:
 
 1. Detects if plugin is in world file (injects if missing)
-2. Launches Gazebo in headless mode
+2. Launches Gazebo in headless mode (no graphical interface)
 3. Generates occupancy map
 4. Saves map files
 5. Cleans up automatically
@@ -58,8 +78,8 @@ If you prefer manual control:
 ```xml
 <plugin name='gazebo_occupancy_map' filename='libgazebo_2Dmap_plugin.so'>
     <map_resolution>0.05</map_resolution>  <!-- 5cm per cell -->
-    <map_height>0.3</map_height>           <!-- slice at 30cm -->
-    <!-- map_size_x/y omitted for auto-detection -->
+    <map_height>0.3</map_height>           <!-- slice at 30cm height -->
+    <!-- Omit map_size_x and map_size_y for auto-detection -->
     <init_robot_x>0</init_robot_x>         <!-- start from origin -->
     <init_robot_y>0</init_robot_y>
 </plugin>
@@ -90,21 +110,21 @@ ros2 run nav2_map_server map_saver_cli -f ~/maps/my_map --ros-args -r map:=map2d
 | Parameter | Default | Description |
 |-----------|---------|-------------|
 | `map_resolution` | 0.05 | Cell size in meters |
-| `map_height` | 0.2 | Height to slice world (0.2-0.5m typical) |
+| `map_height` | 0.2 | Height to slice world in meters (0.2-0.5m typical) |
 | `map_size_x` | auto | Map width - **omit for auto-detection** |
 | `map_size_y` | auto | Map height - **omit for auto-detection** |
-| `map_margin` | 2.0 | Extra space around auto-detected bounds |
-| `init_robot_x` | 0.0 | Start position for wavefront (must be free space!) |
-| `init_robot_y` | 0.0 | Start position for wavefront |
+| `map_margin` | 2.0 | Extra space in meters around auto-detected bounds |
+| `init_robot_x` | 0.0 | Starting X coordinate for exploration (must be free space) |
+| `init_robot_y` | 0.0 | Starting Y coordinate for exploration (must be free space) |
 
 ### Auto-Detection
 
-When you omit `map_size_x` and `map_size_y`:
+When you omit `map_size_x` and `map_size_y`, the plugin automatically determines the map size:
 
-- Plugin analyzes all models in the world
+- Analyzes all models in the world
 - Computes bounding box of all objects
 - Centers map at world origin (0,0)
-- Sizes map to fit all objects + margin
+- Sizes map to fit all objects plus the specified margin
 
 ## Python Integration
 
@@ -167,7 +187,7 @@ ros2 run rviz2 rviz2
 **Map is all gray/unknown**
 
 - Ensure `init_robot_x/y` is in free space (not inside a wall)
-- Check that wavefront can reach all areas
+- The plugin uses wavefront exploration, which spreads outward from the initial position to identify free space. If the starting position is blocked, exploration cannot proceed.
 
 **Map doesn't fit all objects**
 
@@ -194,29 +214,21 @@ ros2 run rviz2 rviz2
 
 ### Topics
 
-- `/map2d` (`nav_msgs/msg/OccupancyGrid`) - Generated map (transient local QoS)
+- `/map2d` (`nav_msgs/msg/OccupancyGrid`) - Published map data. Uses transient local QoS, which means late-joining subscribers receive the last published message.
 
-### Services  
+### Services
 
-- `/gazebo_2Dmap_plugin/generate_map` (`std_srvs/srv/Empty`) - Trigger generation
+- `/gazebo_2Dmap_plugin/generate_map` (`std_srvs/srv/Empty`) - Triggers map generation
 
-## Requirements
-
-- ROS 2 Humble
-- Gazebo 11 (Classic)
-- `nav2_map_server` (for saving maps): `sudo apt install ros-humble-nav2-map-server`
-
-## Notes
+## Important Notes
 
 - **Remove robots** from world before generating map (they appear as obstacles)
-- **Wavefront exploration** starts from `init_robot_x/y` - must be in free space
-- **Frame ID** is set to `odom` (modify source if needed)
-- **Map origin** is always at world origin (0,0) when using auto-detection
+- **Starting position** (`init_robot_x/y`) must be in free space for exploration to work
+- **Frame ID** is set to `odom` (modify source code if you need a different frame)
+- **Map origin** is always centered at world origin (0,0) when using auto-detection
 
-## License
+## Credits and License
 
-MIT License
+This package is licensed under the MIT License.
 
----
-
-**Migrated from ROS 1 to ROS 2 Humble** | Based on [octomap plugin](https://github.com/ethz-asl/rotors_simulator/tree/master/rotors_gazebo_plugins) by ETH Zürich
+Forked from [marinaKollmitz/gazebo_ros_2Dmap_plugin](https://github.com/marinaKollmitz/gazebo_ros_2Dmap_plugin), originally based on ETH Zürich's [octomap plugin](https://github.com/ethz-asl/rotors_simulator/tree/master/rotors_gazebo_plugins). This version adds ROS 2 Humble support, Gazebo 11 Classic compatibility, automatic map sizing, and automated generation scripts.
