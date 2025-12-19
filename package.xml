@@ -2,21 +2,23 @@
 <?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
 <package format="3">
   <name>gazebo_ros2_2dmap_plugin</name>
-  <version>0.0.0</version>
-  <description>Gazebo simulator plugin to automatically generate a 2D occupancy map from the simulated world at a given height.</description>
+  <version>0.1.0</version>
+  <description>Gazebo Fortress (gz-sim) plugin to automatically generate a 2D occupancy map from the simulated world at a given height. Uses Gazebo Transport and ros_gz_bridge for ROS 2 integration.</description>
 
   <maintainer email="user@todo.todo">Your Name</maintainer>
   <license>MIT</license>
 
   <buildtool_depend>ament_cmake</buildtool_depend>
 
-  <depend>rclcpp</depend>
-  <depend>gazebo_ros</depend>
-  <depend>gazebo_dev</depend>
+  <!-- Gazebo Sim dependencies (supports gz-sim6, 7, or 8) -->
+  <!-- The actual package found depends on what's installed -->
+  <build_depend>gz-cmake3</build_depend>
+  
+  <!-- ROS 2 message dependencies -->
   <depend>nav_msgs</depend>
-  <depend>std_srvs</depend>
-  <depend>geometry_msgs</depend>
-
+  
+  <!-- Runtime dependencies for ROS 2 integration -->
+  <exec_depend>ros_gz_bridge</exec_depend>
   <exec_depend>nav2_map_server</exec_depend>
 
   <test_depend>ament_lint_auto</test_depend>
@@ -24,7 +26,8 @@
 
   <export>
     <build_type>ament_cmake</build_type>
-    <gazebo_ros plugin_path="${prefix}/lib" />
+    <!-- Register the plugin with Gazebo Sim -->
+    <gazebo_ros gazebo_model_path="${prefix}/share" />
   </export>
 
 </package>
