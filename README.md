@@ -1,8 +1,11 @@
 # Gazebo ROS 2 2D Map Plugin
 
-**Automatically generate 2D occupancy maps from Gazebo Classic worlds for ROS 2 Humble.**
+**Automatically generate 2D occupancy maps from Gazebo 11 (Classic) worlds for ROS 2 Humble.**
 
-This Gazebo plugin creates occupancy grid maps for robot navigation without running SLAM (Simultaneous Localization and Mapping). It works by slicing the Gazebo world at a configurable height and identifying obstacles through ray casting.
+This Gazebo WorldPlugin creates occupancy grid maps for robot navigation without running SLAM. It works by slicing the Gazebo world at a configurable height and identifies obstacles through ray casting and collision detection.
+
+> [!NOTE]
+> This version is for **Gazebo 11 (Classic)**. For Gazebo Fortress (Ignition), see the `fortress` branch.
 
 ## Table of Contents
 
@@ -11,6 +14,7 @@ This Gazebo plugin creates occupancy grid maps for robot navigation without runn
   - [Installation](#installation)
   - [Automated Generation (Recommended)](#automated-generation-recommended)
   - [Manual Method](#manual-method)
+- [How it Works](#how-it-works)
 - [Configuration](#configuration)
 - [Python Integration](#python-integration)
 - [Visualization](#visualization)
@@ -78,7 +82,7 @@ If you prefer manual control:
 ```xml
 <plugin name='gazebo_occupancy_map' filename='libgazebo_2Dmap_plugin.so'>
     <map_resolution>0.05</map_resolution>  <!-- 5cm per cell -->
-    <map_height>0.3</map_height>           <!-- slice at 30cm height -->
+    <map_height>0.2</map_height>           <!-- slice at 20cm height -->
     <!-- Omit map_size_x and map_size_y for auto-detection -->
     <init_robot_x>0</init_robot_x>         <!-- start from origin -->
     <init_robot_y>0</init_robot_y>
@@ -101,6 +105,38 @@ ros2 service call /gazebo_2Dmap_plugin/generate_map std_srvs/srv/Empty
 
 ```bash
 ros2 run nav2_map_server map_saver_cli -f ~/maps/my_map --ros-args -r map:=map2d
+```
+
+## How it Works
+
+The plugin uses a hybrid approach of **wavefront exploration** and **physics-based geometry checking** to generate the map:
+
+1.  **Exploration Seed**: The process starts at the user-defined `init_robot_x` and `init_robot_y` (this must be free space!).
+2.  **Breadth-First Search (BFS)**: It performs a wavefront expansion (BFS) cell-by-cell to identify all reachable areas from the start point.
+3.  **Collision Checking**: For each cell encountered during traversal, the plugin uses Gazebo's physics engine to perform a collision check at the specified `map_height`.
+4.  **State Marking**:
+    -   If the physics engine detects a collision, the cell is marked as **Occupied** (100).
+    -   If no collision is detected, the cell is marked as **Free** (0) and added to the wavefront to explore its neighbors.
+    -   Cells never reached by the wavefront remain **Unknown** (-1).
+5.  **Publishing**: Once the queue is empty, the resulting `nav_msgs/OccupancyGrid` is published once to the `/map2d` topic.
+
+```mermaid
+flowchart LR
+    Start([<b>Start</b>]) --> Init[Init Queue & Map]
+    Init --> Loop{Queue Empty?}
+    Loop -- No --> Pop[Pop Cell]
+    Pop --> Check{Collision?}
+    Check -- Yes --> MarkOcc[Mark <b>Occ</b>]
+    Check -- No --> MarkFree[Mark <b>Free</b>]
+    MarkFree --> Neighbors[Add Unknown<br/>Neighbors to Queue]
+    Neighbors --> Loop
+    MarkOcc --> Loop
+    Loop -- Yes --> Publish([<b>Publish Map</b>])
+
+    style MarkFree fill:#e1f5fe,stroke:#01579b,color:#000
+    style MarkOcc fill:#ffebee,stroke:#b71c1c,color:#000
+    style Publish fill:#e8f5e9,stroke:#2e7d32,color:#000
+    style Start fill:#f3e5f5,stroke:#7b1fa2,color:#000
 ```
 
 ## Configuration

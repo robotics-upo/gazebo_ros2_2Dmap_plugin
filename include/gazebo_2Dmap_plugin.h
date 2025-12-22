@@ -71,13 +71,6 @@ class OccupancyMapFromWorld : public WorldPlugin {
                               gazebo::physics::RayShapePtr ray);
   
 
-//  void FloodFill(const math::Vector3& seed_point,
-//                 const math::Vector3& bounding_box_origin,
-//                 const math::Vector3& bounding_box_lengths,
-//                 const double leaf_size);
-  
-  /*! \brief
-  */
   void CreateOccupancyMap();
 
   /// \brief Compute world bounding box from all models

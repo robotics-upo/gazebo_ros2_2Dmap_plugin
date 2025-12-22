@@ -62,9 +62,9 @@ install(DIRECTORY launch/
   DESTINATION share/${PROJECT_NAME}/launch
 )
 
-install(DIRECTORY worlds/
-  DESTINATION share/${PROJECT_NAME}/worlds
-)
+# install(DIRECTORY worlds/
+#   DESTINATION share/${PROJECT_NAME}/worlds
+# )
 
 install(PROGRAMS scripts/generate_map.sh
   DESTINATION lib/${PROJECT_NAME}

@@ -34,10 +34,6 @@ OccupancyMapFromWorld::~OccupancyMapFromWorld() {}
 
 void OccupancyMapFromWorld::Load(physics::WorldPtr _parent,
                                  sdf::ElementPtr _sdf) {
-  // if (kPrintOnPluginLoad) {
-  //   gzdbg << __FUNCTION__ << "() called." << std::endl;
-  // }
-
   world_ = _parent;
 
   // Initialize ROS 2 node
@@ -58,8 +54,8 @@ void OccupancyMapFromWorld::Load(physics::WorldPtr _parent,
 
   map_height_ = 0.2;  // Default height of the 2D map slice
 
-  if(_sdf->HasElement("map_z"))
-    map_height_ = _sdf->GetElement("map_z")->Get<double>();
+  if(_sdf->HasElement("map_height"))
+    map_height_ = _sdf->GetElement("map_height")->Get<double>();
 
   init_robot_x_ = 0.0;
 
